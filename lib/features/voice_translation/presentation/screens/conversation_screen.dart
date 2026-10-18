@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 
+import '../../../../core/services/offline_language_service.dart';
+import '../../../../core/services/offline_speech_service.dart';
 import '../../../../core/services/settings_service.dart';
 import '../../../../core/services/stt_service.dart';
 import '../../../../core/services/translation_service.dart';
@@ -42,19 +44,146 @@ class _ConversationScreenState extends State<ConversationScreen> {
     _loadLocales();
   }
 
+  String _norm(String id) => id.replaceAll('_', '-').toLowerCase();
+
   Future<void> _loadLocales() async {
-    final locales = sortByPriorityWith(
-      await SttService.instance.getAvailableLocalesIfPermitted(),
-      (l) => l.localeId,
-    );
+    final pluginLocales = await SttService.instance.getAvailableLocalesIfPermitted();
+    if (!mounted) return;
+
+    // The speech engine's own list can omit languages whose offline pack is
+    // installed (and lists ones that only work online). Add every installed
+    // offline language so the picker always offers what works with no internet.
+    final installed = pluginLocales.isEmpty ? <({String tag, String name})>[] : await OfflineSpeechService.instance.installedLanguages();
+    final known = pluginLocales.map((l) => _norm(l.localeId)).toSet();
+    final merged = [
+      ...pluginLocales,
+      for (final lang in installed)
+        if (!known.contains(_norm(lang.tag))) LocaleName(lang.tag.replaceAll('-', '_'), lang.name),
+    ];
+    final locales = sortByPriorityWith(merged, (l) => l.localeId);
+
+    // Both people default to an installed offline English (US first).
+    String? defaultLocale;
+    final installedEnglish = installed
+        .where((l) => _norm(l.tag).startsWith('en-'))
+        .map((l) => l.tag.replaceAll('-', '_'))
+        .toList()
+      ..sort((a, b) => (_norm(a) == 'en-us' ? 0 : 1).compareTo(_norm(b) == 'en-us' ? 0 : 1));
+    if (installedEnglish.isNotEmpty) {
+      defaultLocale = installedEnglish.first;
+    } else if (locales.isNotEmpty) {
+      final english = locales.where((l) => _norm(l.localeId).startsWith('en-')).map((l) => l.localeId).toList()
+        ..sort((a, b) => (_norm(a) == 'en-us' ? 0 : 1).compareTo(_norm(b) == 'en-us' ? 0 : 1));
+      defaultLocale = english.isNotEmpty ? english.first : locales.first.localeId;
+    }
+
     if (!mounted) return;
     setState(() {
       _locales = locales;
-      if (locales.isNotEmpty) {
-        _personALocale = locales.first.localeId;
-        _personBLocale = locales.length > 1 ? locales[1].localeId : locales.first.localeId;
+      if (defaultLocale != null) {
+        _personALocale = defaultLocale;
+        _personBLocale = defaultLocale;
       }
     });
+    _refreshOffline();
+  }
+
+  /// Offline readiness of the two chosen languages (see
+  /// [OfflineLanguageService]); drives the single strip under the header.
+  final Map<String, OfflineLanguageStatus> _offline = {};
+  bool _offlineWorking = false;
+
+  List<String> get _chosenLocales =>
+      _personALocale == _personBLocale ? [_personALocale] : [_personALocale, _personBLocale];
+
+  Future<void> _refreshOffline() async {
+    for (final id in _chosenLocales) {
+      final status = await OfflineLanguageService.instance.status(id);
+      if (!mounted) return;
+      setState(() => _offline[id] = status);
+    }
+  }
+
+  /// One-time download of whatever the chosen languages are missing.
+  Future<void> _downloadOffline() async {
+    setState(() => _offlineWorking = true);
+    for (final id in _chosenLocales) {
+      if (_offline[id]?.needsDownload != true) continue;
+      final result = await OfflineLanguageService.instance.download(id);
+      if (!mounted) return;
+      if (result == OfflineDownloadResult.noInternet) {
+        setState(() => _status = 'No internet — connect once, then tap Download again.');
+        break;
+      }
+    }
+    await _refreshOffline();
+    if (mounted) setState(() => _offlineWorking = false);
+  }
+
+  String _languageName(String localeId) {
+    final match = _locales.where((l) => l.localeId == localeId);
+    return (match.isEmpty ? localeId : match.first.name).split(' (').first;
+  }
+
+  /// Quiet by default: a single muted line when everything works offline,
+  /// and a banner with a Download button only when something is missing.
+  Widget _offlineStrip() {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final statuses = [for (final id in _chosenLocales) ?_offline[id]];
+    if (statuses.isEmpty) return const SizedBox.shrink();
+
+    final needs = statuses.where((s) => s.needsDownload).toList();
+    final onlineOnly = statuses.where((s) => s.speechNeedsInternet).toList();
+    final muted = theme.textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant);
+    String names(List<OfflineLanguageStatus> list) => list.map((s) => _languageName(s.localeId)).toSet().join(' and ');
+
+    Widget note(IconData icon, String text) => Padding(
+          padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
+          child: Row(children: [
+            Icon(icon, size: 16, color: scheme.onSurfaceVariant),
+            const SizedBox(width: 6),
+            Expanded(child: Text(text, style: muted)),
+          ]),
+        );
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (needs.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(14, 8, 8, 8),
+              decoration: BoxDecoration(
+                color: scheme.secondaryContainer,
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Row(children: [
+                Icon(Icons.download_for_offline_outlined, size: 20, color: scheme.onSecondaryContainer),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Download ${names(needs)} to use without internet',
+                    style: theme.textTheme.bodyMedium?.copyWith(color: scheme.onSecondaryContainer),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                _offlineWorking
+                    ? const Padding(
+                        padding: EdgeInsets.all(10),
+                        child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
+                      )
+                    : FilledButton.tonal(onPressed: _downloadOffline, child: const Text('Download')),
+              ]),
+            ),
+          ),
+        if (onlineOnly.isNotEmpty)
+          note(Icons.cloud_outlined, 'Speaking ${names(onlineOnly)} needs internet on this phone')
+        else if (needs.isEmpty)
+          note(Icons.offline_pin_outlined, 'Works without internet'),
+      ],
+    );
   }
 
   Future<void> _startTurn(_ActiveSpeaker speaker) async {
@@ -101,6 +230,25 @@ class _ConversationScreenState extends State<ConversationScreen> {
         if (isFinal) _finishTurn(speaker);
       },
       localeId: speakerLocale,
+      onError: (error) {
+        if (!mounted || _activeSpeaker == _ActiveSpeaker.none) return;
+        // The recognizer ends with "no match"/"timeout" at a long pause even
+        // when it already heard words: translate those instead of dropping them.
+        final heard = speaker == _ActiveSpeaker.personA ? _personAText : _personBText;
+        if ((error == 'error_no_match' || error == 'error_speech_timeout') && heard.trim().isNotEmpty) {
+          _finishTurn(speaker);
+          return;
+        }
+        SttService.instance.stopListening();
+        setState(() {
+          _activeSpeaker = _ActiveSpeaker.none;
+          _status = error == 'error_network' || error == 'error_network_timeout' || SttService.instance.lastErrorIsMissingOfflinePack
+              ? 'No offline speech pack for this language and no internet. Connect once and tap Download above.'
+              : error == 'error_no_match' || error == 'error_speech_timeout'
+                  ? 'Didn\'t catch that — try again'
+                  : 'Speech recognition error: $error';
+        });
+      },
     );
   }
 
@@ -110,7 +258,9 @@ class _ConversationScreenState extends State<ConversationScreen> {
     setState(() => _activeSpeaker = _ActiveSpeaker.none);
 
     if (spokenText.trim().isEmpty) {
-      setState(() => _status = 'Didn\'t catch that — try again');
+      setState(() => _status = SttService.instance.lastErrorIsMissingOfflinePack
+          ? 'This language isn\'t installed for offline speech. Open Android Settings > Google > Speech > Offline speech recognition and download it.'
+          : 'Didn\'t catch that — try again');
       return;
     }
 
@@ -141,6 +291,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
       });
       SettingsService.instance.hapticImpact();
       await TtsService.instance.speak(translated, language: listenerLocale);
+    } on LanguagePackMissing catch (e) {
+      setState(() => _status = e.toString());
     } catch (e) {
       setState(() => _status = 'Translation failed: $e');
     }
@@ -282,6 +434,8 @@ class _ConversationScreenState extends State<ConversationScreen> {
                   ],
                 ),
               ),
+              const SizedBox(height: 8),
+              _offlineStrip(),
               Align(
                 alignment: Alignment.centerRight,
                 child: TextButton.icon(
@@ -298,7 +452,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
                       title: 'Person A',
                       color: scheme.primary,
                       localeId: _personALocale,
-                      onLocaleChanged: (value) => setState(() => _personALocale = value),
+                      onLocaleChanged: (value) {
+                        setState(() => _personALocale = value);
+                        _refreshOffline();
+                      },
                       text: _personAText,
                       isListening: _activeSpeaker == _ActiveSpeaker.personA,
                       isDisabled: _activeSpeaker == _ActiveSpeaker.personB,
@@ -311,7 +468,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
                       title: 'Person B',
                       color: scheme.secondary,
                       localeId: _personBLocale,
-                      onLocaleChanged: (value) => setState(() => _personBLocale = value),
+                      onLocaleChanged: (value) {
+                        setState(() => _personBLocale = value);
+                        _refreshOffline();
+                      },
                       text: _personBText,
                       isListening: _activeSpeaker == _ActiveSpeaker.personB,
                       isDisabled: _activeSpeaker == _ActiveSpeaker.personA,

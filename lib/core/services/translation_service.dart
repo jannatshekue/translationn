@@ -4,6 +4,17 @@ import 'package:google_mlkit_translation/google_mlkit_translation.dart';
 /// fully offline once each language's model is downloaded (a one-time,
 /// free download — no API key or billing account, unlike cloud translation
 /// APIs), matching the app's offline-first requirement.
+/// Thrown when a language pack isn't on the phone and couldn't be downloaded
+/// (i.e. offline before the one-time download).
+class LanguagePackMissing implements Exception {
+  final TranslateLanguage language;
+  const LanguagePackMissing(this.language);
+
+  @override
+  String toString() =>
+      'The ${language.name} translation pack isn\'t downloaded yet. Connect to the internet once to download it; after that it works offline.';
+}
+
 class TranslationService {
   TranslationService._internal();
 
@@ -20,11 +31,30 @@ class TranslationService {
     return BCP47Code.fromRawValue(code);
   }
 
-  Future<void> _ensureModelDownloaded(TranslateLanguage language) async {
-    final downloaded = await _modelManager.isModelDownloaded(language.bcpCode);
-    if (!downloaded) {
-      await _modelManager.downloadModel(language.bcpCode);
+  /// False (never throws) when the check itself fails, e.g. no plugin.
+  Future<bool> isModelDownloaded(TranslateLanguage language) async {
+    try {
+      return await _modelManager.isModelDownloaded(language.bcpCode);
+    } catch (_) {
+      return false;
     }
+  }
+
+  /// Best-effort download of a language pack so later use works offline.
+  /// Returns false (never throws) when the phone is offline.
+  Future<bool> prepareLanguage(TranslateLanguage language) async {
+    try {
+      if (await isModelDownloaded(language)) return true;
+      return await _modelManager.downloadModel(language.bcpCode);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _ensureModelDownloaded(TranslateLanguage language) async {
+    if (await isModelDownloaded(language)) return;
+    final ok = await prepareLanguage(language);
+    if (!ok) throw LanguagePackMissing(language);
   }
 
   Future<String> translate(

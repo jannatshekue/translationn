@@ -66,10 +66,14 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
     _controller.forward();
     Future.delayed(const Duration(milliseconds: _total), () {
       if (!mounted) return;
-      final nextRoute = SettingsService.instance.userProfile == null
-          ? AppRoutes.profileSelection
-          : AppRoutes.home;
-      Navigator.of(context).pushReplacementNamed(nextRoute);
+      final settings = SettingsService.instance;
+      if (settings.userProfile == null) {
+        Navigator.of(context).pushReplacementNamed(AppRoutes.profileSelection);
+      } else if (!settings.offlineSetupDone) {
+        Navigator.of(context).pushReplacementNamed(AppRoutes.offlineSetup, arguments: true);
+      } else {
+        Navigator.of(context).pushReplacementNamed(AppRoutes.home);
+      }
     });
   }
 

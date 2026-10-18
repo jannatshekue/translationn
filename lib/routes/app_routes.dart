@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../features/custom_signs/presentation/screens/custom_signs_screen.dart';
 import '../features/device_sync/presentation/screens/device_sync_screen.dart';
 import '../features/learning_module/presentation/screens/learning_module_screen.dart';
+import '../features/offline_setup/presentation/screens/offline_setup_screen.dart';
 import '../features/onboarding/presentation/screens/profile_selection_screen.dart';
 import '../features/saved_phrases/presentation/screens/saved_phrases_screen.dart';
 import '../features/settings/presentation/screens/settings_screen.dart';
@@ -26,6 +27,7 @@ class AppRoutes {
   static const String learningModule = '/learning-module';
   static const String savedPhrases = '/saved-phrases';
   static const String settings = '/settings';
+  static const String offlineSetup = '/offline-setup';
 
   static Map<String, WidgetBuilder> get routes => {
         splash: (context) => const SplashScreen(),
@@ -39,5 +41,7 @@ class AppRoutes {
         learningModule: (context) => const LearningModuleScreen(),
         savedPhrases: (context) => const SavedPhrasesScreen(),
         settings: (context) => const SettingsScreen(),
+        offlineSetup: (context) =>
+            OfflineSetupScreen(firstRun: ModalRoute.of(context)?.settings.arguments == true),
       };
 }

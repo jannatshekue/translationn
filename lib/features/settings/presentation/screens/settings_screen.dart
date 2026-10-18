@@ -218,6 +218,17 @@ class SettingsScreen extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 28),
+                const SectionHeader('Offline languages'),
+                SectionCard(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: ListTile(
+                    title: const Text('Download languages for offline use'),
+                    subtitle: const Text('Speech and translation packs, so conversation works without internet'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () => Navigator.of(context).pushNamed(AppRoutes.offlineSetup),
+                  ),
+                ),
+                const SizedBox(height: 28),
                 const SectionHeader('Backup & restore'),
                 SectionCard(
                   child: Column(

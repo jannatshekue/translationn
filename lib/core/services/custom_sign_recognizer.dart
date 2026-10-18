@@ -19,19 +19,30 @@ class CustomSignRecognizer {
 
   static final CustomSignRecognizer instance = CustomSignRecognizer._internal();
 
-  /// Empirically reasonable cutoff for the normalized landmark distance;
-  /// signs with very different hand shapes fall well above this.
-  static const matchThreshold = 0.5;
+  /// Cutoff on the normalized 42-value landmark distance (palm lengths).
+  /// Live landmark jitter alone is ~0.5 here, so the old 0.5 cutoff rejected
+  /// nearly every real attempt; clearly different hand shapes are > 2.
+  static const matchThreshold = 1.2;
 
-  List<MapEntry<CustomSign, List<double>>> _templates = [];
+  /// A sign's recorded poses, thinned to at most this many frames.
+  static const _maxFramesPerSign = 20;
+
+  List<MapEntry<CustomSign, List<List<double>>>> _templates = [];
 
   Future<void> loadTemplates() async {
     final signs = await DatabaseService.instance.getCustomSigns();
-    final templates = <MapEntry<CustomSign, List<double>>>[];
+    final templates = <MapEntry<CustomSign, List<List<double>>>>[];
     for (final sign in signs) {
-      final template = HandPoseMatcher.computeTemplate(sign.decodedFrames);
-      if (template != null) {
-        templates.add(MapEntry(sign, template));
+      try {
+        final vectors = sign.decodedFrames
+            .map(HandPoseMatcher.normalizeFrameFromMaps)
+            .whereType<List<double>>()
+            .toList();
+        if (vectors.isEmpty) continue;
+        final step = (vectors.length / _maxFramesPerSign).ceil().clamp(1, vectors.length);
+        templates.add(MapEntry(sign, [for (var i = 0; i < vectors.length; i += step) vectors[i]]));
+      } catch (_) {
+        // A corrupt saved sign must not break recognition of the others.
       }
     }
     _templates = templates;
@@ -45,7 +56,13 @@ class CustomSignRecognizer {
     CustomSign? bestSign;
     var bestDistance = double.infinity;
     for (final entry in _templates) {
-      final d = HandPoseMatcher.distance(vector, entry.value);
+      // Compare with each recorded pose and keep the closest: averaging a
+      // 2s recording blurs the sign into a pose the user never makes.
+      var d = double.infinity;
+      for (final frame in entry.value) {
+        final fd = HandPoseMatcher.distance(vector, frame);
+        if (fd < d) d = fd;
+      }
       if (d < bestDistance) {
         bestDistance = d;
         bestSign = entry.key;

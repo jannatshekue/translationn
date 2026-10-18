@@ -14,11 +14,27 @@ class SttService {
   bool _isInitialized = false;
   List<LocaleName>? _cachedLocales;
 
+  /// Last recognizer error (e.g. `error_language_unavailable`), cleared at
+  /// the start of every listen. Screens read this to explain a failed turn.
+  String? lastError;
+
+  void Function(String error)? _errorHandler;
+
   Future<bool> initialize() async {
     if (_isInitialized) return true;
-    _isInitialized = await _speech.initialize();
+    _isInitialized = await _speech.initialize(
+      onError: (error) {
+        lastError = error.errorMsg;
+        _errorHandler?.call(error.errorMsg);
+      },
+    );
     return _isInitialized;
   }
+
+  /// True when [lastError] means the offline language pack for the chosen
+  /// language isn't installed on the phone.
+  bool get lastErrorIsMissingOfflinePack =>
+      lastError == 'error_language_unavailable' || lastError == 'error_language_not_supported';
 
   /// Locales this device's speech recognizer actually supports. Cached
   /// after the first call — this list doesn't change during a session.
@@ -50,13 +66,30 @@ class SttService {
   Future<void> startListening(
     void Function(String recognizedText, bool isFinal) onResult, {
     String? localeId,
+    void Function(String error)? onError,
   }) async {
     final available = await initialize();
     if (!available) return;
-    await _speech.listen(
-      onResult: (result) => onResult(result.recognizedWords, result.finalResult),
-      listenOptions: SpeechListenOptions(localeId: localeId),
-    );
+    lastError = null;
+    // Offline first: onDevice forces the local recognizer (Android's default
+    // one sends audio to Google). If this language has no offline pack, fall
+    // back once to the online recognizer, which works whenever there is a
+    // connection; only if that fails too is the error reported.
+    var onDevice = true;
+    Future<void> listen() => _speech.listen(
+          onResult: (result) => onResult(result.recognizedWords, result.finalResult),
+          listenOptions: SpeechListenOptions(localeId: localeId, onDevice: onDevice),
+        );
+    _errorHandler = (error) {
+      if (onDevice && lastErrorIsMissingOfflinePack) {
+        onDevice = false;
+        lastError = null;
+        listen();
+        return;
+      }
+      onError?.call(error);
+    };
+    await listen();
   }
 
   Future<void> stopListening() async {

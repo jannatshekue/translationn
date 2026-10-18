@@ -38,6 +38,7 @@ void main() {
       'flutter_tts',
       'translation/emergency_sms',
       'translation/contacts',
+      'translation/offline_speech',
       'flutter.baseflow.com/permissions/methods',
       'flutter.baseflow.com/geolocator',
     ]) {
@@ -62,6 +63,7 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     final settings = SettingsService.instance;
     settings.userProfile = profile;
+    settings.offlineSetupDone = true;
     settings.textScale = 1.6;
     settings.highContrast = highContrast;
     settings.themeMode = dark ? AppThemeMode.dark : AppThemeMode.light;
@@ -202,6 +204,11 @@ void main() {
               stage = 'conversation';
               await push(tester, AppRoutes.conversationMode);
               expect(find.text('Conversation mode'), findsWidgets);
+              await scrollThrough(tester);
+              await pop(tester);
+              stage = 'offline setup';
+              await push(tester, AppRoutes.offlineSetup);
+              expect(find.text('Get ready for offline'), findsOneWidget);
               await scrollThrough(tester);
               await pop(tester);
               stage = 'connect devices';

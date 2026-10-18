@@ -12,9 +12,14 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.ContactsContract
+import android.speech.RecognitionSupport
+import android.speech.RecognitionSupportCallback
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.telephony.SmsManager
 import android.window.SplashScreenView
 import androidx.annotation.NonNull
+import androidx.annotation.RequiresApi
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -36,6 +41,7 @@ import java.util.concurrent.atomic.AtomicInteger
 class MainActivity : FlutterActivity() {
     private val emergencySmsChannel = "translation/emergency_sms"
     private val contactsChannel = "translation/contacts"
+    private val offlineSpeechChannel = "translation/offline_speech"
     private val pickContactRequestCode = 7301
     private var pendingContactResult: MethodChannel.Result? = null
     private val requestCodeCounter = AtomicInteger(0)
@@ -86,6 +92,25 @@ class MainActivity : FlutterActivity() {
         // Contact picker: launches the system phonebook and returns the one
         // contact the person taps. The picker grants this app temporary read
         // access to just that row, so no READ_CONTACTS permission is needed.
+        // Offline speech packs: whether a language's on-device recognizer is
+        // installed, and a trigger to download it (Android 13+).
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, offlineSpeechChannel)
+            .setMethodCallHandler { call, result ->
+                val tag = (call.argument<String>("locale") ?: "en-US").replace('_', '-')
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+                    !SpeechRecognizer.isOnDeviceRecognitionAvailable(this)
+                ) {
+                    result.success("unknown")
+                    return@setMethodCallHandler
+                }
+                when (call.method) {
+                    "status" -> checkOfflineSpeech(tag, result)
+                    "languages" -> listOfflineSpeech(result)
+                    "download" -> downloadOfflineSpeech(tag, result)
+                    else -> result.notImplemented()
+                }
+            }
+
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, contactsChannel)
             .setMethodCallHandler { call, result ->
                 if (call.method != "pickContact") {
@@ -163,6 +188,86 @@ class MainActivity : FlutterActivity() {
             pending.success(null)
         } catch (e: Exception) {
             pending.error("CONTACT_READ_FAILED", "Could not read that contact.", null)
+        }
+    }
+
+    private fun speechIntent(tag: String) = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+        .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+        .putExtra(RecognizerIntent.EXTRA_LANGUAGE, tag)
+
+    /**
+     * Asks the on-device recognizer what it supports. [onResult] gets the
+     * support info plus the tag if that exact variant is offered, or null.
+     */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    private fun resolveOfflineSpeech(
+        tag: String,
+        onError: () -> Unit,
+        onResult: (RecognitionSupport, String?) -> Unit,
+    ) {
+        val recognizer = SpeechRecognizer.createOnDeviceSpeechRecognizer(this)
+        recognizer.checkRecognitionSupport(
+            speechIntent(tag),
+            ContextCompat.getMainExecutor(this),
+            object : RecognitionSupportCallback {
+                override fun onSupportResult(support: RecognitionSupport) {
+                    recognizer.destroy()
+                    val all = support.installedOnDeviceLanguages +
+                        support.supportedOnDeviceLanguages +
+                        support.pendingOnDeviceLanguages
+                    // Exact variant only: an en-US pack can't recognize en-HK,
+                    // so a same-language match would report a false "installed".
+                    val resolved = all.firstOrNull { it.replace('_', '-').equals(tag, ignoreCase = true) }
+                    onResult(support, resolved)
+                }
+
+                override fun onError(error: Int) {
+                    recognizer.destroy()
+                    onError()
+                }
+            },
+        )
+    }
+
+    /** Replies "installed", "downloadable", "unsupported" or "unknown". */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    private fun checkOfflineSpeech(tag: String, result: MethodChannel.Result) {
+        resolveOfflineSpeech(tag, { result.success("unknown") }) { support, resolved ->
+            result.success(
+                when {
+                    resolved == null -> "unsupported"
+                    support.installedOnDeviceLanguages.contains(resolved) -> "installed"
+                    else -> "downloadable"
+                }
+            )
+        }
+    }
+
+    /** Replies with the installed on-device speech languages as {tag, name}. */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    private fun listOfflineSpeech(result: MethodChannel.Result) {
+        resolveOfflineSpeech("en-US", { result.success(emptyList<Map<String, String>>()) }) { support, _ ->
+            result.success(
+                support.installedOnDeviceLanguages.map {
+                    val tag = it.replace('_', '-')
+                    mapOf("tag" to tag, "name" to java.util.Locale.forLanguageTag(tag).getDisplayName(java.util.Locale.ENGLISH))
+                }
+            )
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    private fun downloadOfflineSpeech(tag: String, result: MethodChannel.Result) {
+        resolveOfflineSpeech(tag, { result.success(false) }) { _, resolved ->
+            if (resolved == null) {
+                result.success(false)
+                return@resolveOfflineSpeech
+            }
+            val recognizer = SpeechRecognizer.createOnDeviceSpeechRecognizer(this)
+            recognizer.triggerModelDownload(speechIntent(resolved))
+            // Keep the recognizer alive while the system fetches the pack.
+            uiHandler.postDelayed({ recognizer.destroy() }, 120_000)
+            result.success(true)
         }
     }
 
@@ -252,6 +357,10 @@ class MainActivity : FlutterActivity() {
         SmsManager.RESULT_ERROR_NULL_PDU -> "The message could not be prepared for sending."
         SmsManager.RESULT_ERROR_GENERIC_FAILURE -> "The phone could not send the message. Check your SIM, signal and airtime."
         SmsManager.RESULT_ERROR_LIMIT_EXCEEDED -> "Too many messages were sent recently. Wait a moment and try again."
+        // 17 = RESULT_NETWORK_REJECT, 102 = RESULT_RIL_NETWORK_REJECT
+        17, 102 -> "The mobile network rejected the message. Check airtime/SMS balance and that the number includes its country code."
+        // 112 = RESULT_RIL_NETWORK_ERR
+        112 -> "The mobile network reported an error. Check signal, airtime/SMS balance and that the SIM can send SMS."
         else -> "The message could not be sent (code $resultCode)."
     }
 }

@@ -3,8 +3,9 @@ import 'dart:math';
 import 'package:hand_detection/hand_detection.dart';
 
 /// Lightweight, on-device template matching for custom signs: normalizes a
-/// hand's landmarks (translate to wrist origin, scale by palm length) so the
-/// result is invariant to hand position and distance from the camera, then
+/// hand's landmarks (translate to wrist origin, rotate so the wrist-to-middle-
+/// finger-base line has a fixed direction, scale by palm length) so the
+/// result is invariant to hand position, tilt and distance from the camera, then
 /// compares against saved templates by Euclidean distance. This is the
 /// approach the project design calls for instead of retraining a model per
 /// new sign.
@@ -18,17 +19,23 @@ class HandPoseMatcher {
     final middleMcp = byType[HandLandmarkType.middleFingerMCP];
     if (wrist == null || middleMcp == null) return null;
 
-    final scale = sqrt(
-      pow(middleMcp.x - wrist.x, 2) + pow(middleMcp.y - wrist.y, 2),
-    );
+    final axisX = middleMcp.x - wrist.x;
+    final axisY = middleMcp.y - wrist.y;
+    final scale = sqrt(axisX * axisX + axisY * axisY);
     if (scale < 1e-6) return null;
+    // Rotating by minus the palm axis angle puts that axis along +x for every
+    // hand, so a tilted hand yields the same vector as an upright one.
+    final cosA = axisX / scale;
+    final sinA = axisY / scale;
 
     final vector = <double>[];
     for (final type in HandLandmarkType.values) {
       final point = byType[type];
       if (point == null) return null;
-      vector.add((point.x - wrist.x) / scale);
-      vector.add((point.y - wrist.y) / scale);
+      final dx = point.x - wrist.x;
+      final dy = point.y - wrist.y;
+      vector.add((dx * cosA + dy * sinA) / scale);
+      vector.add((dy * cosA - dx * sinA) / scale);
     }
     return vector;
   }

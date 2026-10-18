@@ -28,7 +28,9 @@ class _ProfileSelectionScreenState extends State<ProfileSelectionScreen> {
     setState(() => _saving = true);
     SettingsService.instance.hapticTap();
     await ProfileExperience.choose(profile, firstRun: true);
-    if (mounted) Navigator.of(context).pushReplacementNamed(AppRoutes.home);
+    if (mounted) {
+      Navigator.of(context).pushReplacementNamed(AppRoutes.offlineSetup, arguments: true);
+    }
   }
 
   @override

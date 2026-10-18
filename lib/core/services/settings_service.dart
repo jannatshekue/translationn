@@ -28,12 +28,17 @@ class SettingsService extends ChangeNotifier {
   static const _userProfileKey = 'settings_user_profile';
   static const _signLanguageKey = 'settings_sign_language';
   static const _quickPhrasesKey = 'settings_quick_phrases_home';
+  static const _offlineSetupKey = 'settings_offline_setup_done';
 
   double textScale = 1.0;
   bool highContrast = false;
   bool vibrationEnabled = true;
   bool flashAlertsEnabled = false;
   AppThemeMode themeMode = AppThemeMode.automatic;
+
+  /// Whether the one-time offline language download step has been shown
+  /// (done or skipped). It stays reachable from Settings.
+  bool offlineSetupDone = false;
 
   /// Null until the user picks one on first run (see onboarding).
   UserProfile? userProfile;
@@ -89,6 +94,7 @@ class SettingsService extends ChangeNotifier {
     userProfile = profileIndex == null ? null : UserProfile.values[profileIndex];
     signLanguage = SignLanguage.values[prefs.getInt(_signLanguageKey) ?? SignLanguage.ksl.index];
     quickPhrasesOnHome = prefs.getBool(_quickPhrasesKey);
+    offlineSetupDone = prefs.getBool(_offlineSetupKey) ?? false;
     _syncAutoThemeTimer();
     notifyListeners();
   }
@@ -115,6 +121,13 @@ class SettingsService extends ChangeNotifier {
       case UserProfile.normal:
         break;
     }
+  }
+
+  Future<void> setOfflineSetupDone(bool value) async {
+    offlineSetupDone = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_offlineSetupKey, value);
   }
 
   Future<void> setQuickPhrasesOnHome(bool value) async {

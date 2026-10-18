@@ -59,7 +59,11 @@ class HandDetectionService {
   }
 
   Future<void> dispose() async {
-    await _detector?.dispose();
+    // Clear the field first: a screen that opens right after another closes
+    // calls initialize() while this dispose is still awaiting, and must not
+    // have its fresh (or reused) detector nulled out from under it.
+    final detector = _detector;
     _detector = null;
+    await detector?.dispose();
   }
 }
